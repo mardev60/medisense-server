@@ -112,7 +112,7 @@ def vector_search(vector, user_id, top_k=3):
                 "kind": "vector",
                 "k": top_k
             }],
-            select=["id", "content", "document_name", "page_number", "timestamp"]
+            select=["id", "content", "document_name", "timestamp"]
         )
         
         return {"value": list(results)}
@@ -126,62 +126,75 @@ def encode_document_id(filename: str, page_number: int) -> str:
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '-', encoded_id)
     return safe_id
 
-def split_text(text, max_tokens=60):
-    sentences = text.split(". ")
-    chunks = []
-    current_chunk = ""
-
-    for sentence in sentences:
-        if len((current_chunk + sentence).split()) < max_tokens:
-            current_chunk += sentence + ". "
-        else:
-            chunks.append(current_chunk.strip())
-            current_chunk = sentence + ". "
+def split_text(text, max_tokens=30):
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+    paragraphs = re.split(r'\n{2,}', text)
+    
+    chunks = []
+    for paragraph in paragraphs:
+        paragraph = paragraph.replace('\n', ' ').strip()
+    
+        sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+        
+        current_chunk = ""
+        for sentence in sentences:
+            if len(sentence.split()) > max_tokens:
+                words = sentence.split()
+                for i in range(0, len(words), max_tokens):
+                    chunk = ' '.join(words[i:i + max_tokens])
+                    chunks.append(chunk)
+            else:
+                if len((current_chunk + " " + sentence).split()) <= max_tokens:
+                    current_chunk += " " + sentence if current_chunk else sentence
+                else:
+
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+    
+    chunks = [chunk for chunk in chunks if len(chunk.split()) >= 5] 
     
     return chunks
 
 @app.post("/analyze")
 async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...)):
     try:
+        
         file_content = await file.read()
         
         if len(file_content) == 0:
             return {"status": "error", "message": "Le fichier est vide"}
             
         poller = document_analysis_client.begin_analyze_document(
-            "prebuilt-document", file_content
+            "prebuilt-read", file_content
         )
         result = poller.result()
-        print(result)
+
+        chunks = split_text(result.content)
 
         documents = []
-        for i, page in enumerate(result.pages):
-            page_text = ""
-            for line in page.lines:
-                page_text += line.content + " "
+        for chunk_index, chunk in enumerate(chunks):
+            print("------------------")
+            print(chunk)
+            embedding = get_embedding(chunk)
 
-            if not page_text:
-                continue
-
-            chunks = split_text(page_text, max_tokens=100)
-
-            for chunk_id, chunk in enumerate(chunks):
-                embedding = get_embedding(chunk)
-                doc_id = encode_document_id(file.filename, f"{i + 1}-{chunk_id + 1}")
-
-                document = {
-                    "id": doc_id,
-                    "user_id": str(user_id),
-                    "content": chunk,
-                    "embedding": embedding,
-                    "document_name": str(file.filename),
-                    "page_number": str(i + 1),
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                }
-                documents.append(document)
+            chunk_id = f"{file.filename}-chunk-{chunk_index}"
+            encoded_id = base64.urlsafe_b64encode(chunk_id.encode()).decode()
+            safe_id = re.sub(r'[^a-zA-Z0-9_-]', '-', encoded_id)
+            
+            document = {
+                "id": safe_id,
+                "user_id": str(user_id),
+                "content": str(chunk),
+                "embedding": embedding,
+                "document_name": str(file.filename),
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            }
+            documents.append(document)
 
         if not documents:
             return {"status": "error", "message": "Aucun contenu n'a pu être extrait du document"}
@@ -192,12 +205,11 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             "status": "success",
             "message": "Document analysé et indexé avec succès",
             "data": {
-                "pages_processed": len(result.pages),
-                "document_name": file.filename,
-                "chunks_created": len(documents)
+                "chunks_processed": len(documents),
+                "document_name": file.filename
             }
         }
-
+    
     except Exception as e:
         print(f"Erreur lors de l'analyse du document: {str(e)}")
         return {"status": "error", "message": str(e)}
@@ -212,7 +224,7 @@ async def ask_question(request: QuestionRequest):
         print(relevant_docs)
 
         context = "\n\n".join([
-            f"Page {doc['page_number']} du document {doc['document_name']}:\n{doc['content']}"
+            f"Page document {doc['document_name']}:\n{doc['content']}"
             for doc in relevant_docs
         ])
 
@@ -234,7 +246,7 @@ async def ask_question(request: QuestionRequest):
             "sources": [
                 {
                     "document_name": doc["document_name"],
-                    "page_number": doc["page_number"]
+                    "content": doc["content"]
                 }
                 for doc in relevant_docs
             ]
