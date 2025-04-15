@@ -126,6 +126,23 @@ def encode_document_id(filename: str, page_number: int) -> str:
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '-', encoded_id)
     return safe_id
 
+def split_text(text, max_tokens=60):
+    sentences = text.split(". ")
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len((current_chunk + sentence).split()) < max_tokens:
+            current_chunk += sentence + ". "
+        else:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence + ". "
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
 @app.post("/analyze")
 async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...)):
     try:
@@ -138,6 +155,7 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             "prebuilt-document", file_content
         )
         result = poller.result()
+        print(result)
 
         documents = []
         for i, page in enumerate(result.pages):
@@ -147,21 +165,23 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
 
             if not page_text:
                 continue
-                
-            embedding = get_embedding(page_text)
-            
-            doc_id = encode_document_id(file.filename, i + 1)
-            
-            document = {
-                "id": doc_id,
-                "user_id": str(user_id),
-                "content": str(page_text),
-                "embedding": embedding,
-                "document_name": str(file.filename),
-                "page_number": str(i + 1),
-                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            }
-            documents.append(document)
+
+            chunks = split_text(page_text, max_tokens=100)
+
+            for chunk_id, chunk in enumerate(chunks):
+                embedding = get_embedding(chunk)
+                doc_id = encode_document_id(file.filename, f"{i + 1}-{chunk_id + 1}")
+
+                document = {
+                    "id": doc_id,
+                    "user_id": str(user_id),
+                    "content": chunk,
+                    "embedding": embedding,
+                    "document_name": str(file.filename),
+                    "page_number": str(i + 1),
+                    "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                }
+                documents.append(document)
 
         if not documents:
             return {"status": "error", "message": "Aucun contenu n'a pu être extrait du document"}
@@ -172,11 +192,12 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             "status": "success",
             "message": "Document analysé et indexé avec succès",
             "data": {
-                "pages_processed": len(documents),
-                "document_name": file.filename
+                "pages_processed": len(result.pages),
+                "document_name": file.filename,
+                "chunks_created": len(documents)
             }
         }
-    
+
     except Exception as e:
         print(f"Erreur lors de l'analyse du document: {str(e)}")
         return {"status": "error", "message": str(e)}
@@ -188,15 +209,12 @@ async def ask_question(request: QuestionRequest):
         
         results = vector_search(question_embedding, request.user_id)
         relevant_docs = results.get("value", [])
-
         print(relevant_docs)
 
         context = "\n\n".join([
             f"Page {doc['page_number']} du document {doc['document_name']}:\n{doc['content']}"
             for doc in relevant_docs
         ])
-
-        print(context)
 
         messages = [
             {"role": "system", "content": "Vous êtes un assistant qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
