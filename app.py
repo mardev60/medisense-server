@@ -16,11 +16,14 @@ import json
 import base64
 import re
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 
 cred = credentials.Certificate("./medisense-8ca26-firebase-adminsdk-fbsvc-edee655a7c.json")
-firebase_admin.initialize_app(cred)
+firebase_admin.initialize_app(cred, {
+    'storageBucket': 'medisense-8ca26.firebasestorage.app'
+})
 db = firestore.client()
+bucket = storage.bucket()
 
 load_dotenv()
 
@@ -105,6 +108,7 @@ class DocumentResponse(BaseModel):
     status: str
     chunks_count: Optional[int] = None
     pdf_id: Optional[str] = None
+    storage_url: Optional[str] = None
     error_message: Optional[str] = None
 
 def get_embedding(text: str) -> List[float]:
@@ -185,13 +189,27 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
         if len(file_content) == 0:
             return {"status": "error", "message": "Le fichier est vide"}
             
+        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')
+        unique_filename = f"{user_id}/{timestamp}_{file.filename}"
+        
+        blob = bucket.blob(unique_filename)
+        blob.upload_from_string(
+            file_content,
+            content_type=file.content_type
+        )
+
+        blob.make_public()
+        public_url = blob.public_url
+            
         doc_ref = db.collection('documents').document()
         doc_ref.set({
             'filename': file.filename,
             'upload_date': datetime.utcnow(),
             'size': len(file_content)/1024,
             'user_id': user_id,
-            'status': 'processing'
+            'status': 'processing',
+            'storage_url': public_url,
+            'storage_path': unique_filename
         })
             
         poller = document_analysis_client.begin_analyze_document(
@@ -242,7 +260,8 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             "data": {
                 "chunks_processed": len(documents),
                 "document_name": file.filename,
-                "pdf_id": pdf_id
+                "pdf_id": pdf_id,
+                "storage_url": public_url
             }
         }
     
@@ -360,7 +379,8 @@ async def get_user_documents(user_id: str):
                 status=doc_data.get('status'),
                 chunks_count=doc_data.get('chunks_count'),
                 pdf_id=doc_data.get('pdf_id'),
-                error_message=doc_data.get('error_message')
+                error_message=doc_data.get('error_message'),
+                storage_url=doc_data.get('storage_url')
             ))
         
         return {
