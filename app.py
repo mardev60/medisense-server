@@ -101,7 +101,7 @@ class DocumentResponse(BaseModel):
     id: str
     filename: str
     upload_date: datetime
-    size: int
+    size: float
     status: str
     chunks_count: Optional[int] = None
     pdf_id: Optional[str] = None
@@ -267,7 +267,7 @@ async def ask_question(request: QuestionRequest):
         ])
 
         # Mots-clés pour détecter une demande de rendez-vous
-        rdv_keywords = ["rdv", "rendez-vous", "prendre rendez-vous", "souhaite prendre un rdv", 
+        rdv_keywords = ["rdv", "@", "email", "email rendez vous", "rendez vous", "rendez-vous", "prendre rendez-vous", "souhaite prendre un rdv", 
                        "souhaite prendre rendez-vous", "voulez prendre un rdv", "voulez prendre rendez-vous"]
 
         if any(keyword in request.question.lower() for keyword in rdv_keywords):
@@ -286,7 +286,7 @@ async def ask_question(request: QuestionRequest):
             }
 
             response = requests.post(
-                "https://n8n-prod.makeitpost.com/webhook-test/866df774-73fb-4176-b0ec-a4a8c499aaaf",
+                "https://n8n-prod.makeitpost.com/webhook/866df774-73fb-4176-b0ec-a4a8c499aaaf",
                 json=webhook_data
             )
 
