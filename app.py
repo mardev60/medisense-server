@@ -135,6 +135,7 @@ def vector_search(vector, user_id, pdf_id, top_k=3):
             }],
             select=["id", "content", "document_name", "timestamp"]
         )
+        print(results)
         
         return {"value": list(results)}
     except Exception as e:
@@ -280,16 +281,34 @@ async def ask_question(request: QuestionRequest):
         relevant_docs = results.get("value", [])
         print(relevant_docs)
 
-        context = "\n\n".join([
-            f"Page document {doc['document_name']}:\n{doc['content']}"
-            for doc in relevant_docs
-        ])
-
         # Mots-clés pour détecter une demande de rendez-vous
         rdv_keywords = ["rdv", "@", "email", "email rendez vous", "rendez vous", "rendez-vous", "prendre rendez-vous", "souhaite prendre un rdv", 
                        "souhaite prendre rendez-vous", "voulez prendre un rdv", "voulez prendre rendez-vous"]
 
+        # Mots-clés pour détecter une demande de vocal par mail
+        vocal_mail_keywords = ["vocal", "voix", "audio", "enregistrement"]
+
         if any(keyword in request.question.lower() for keyword in rdv_keywords):
+            is_vocal_mail = any(keyword in request.question.lower() for keyword in vocal_mail_keywords)
+            
+            if is_vocal_mail:
+                all_docs = search_client.search(
+                    search_text="*",
+                    filter=f"user_id eq '{request.user_id}' and pdf_id eq '{pdf_id}'",
+                    select=["content", "document_name"]
+                )
+                
+                full_context = "\n\n".join([
+                    f"\n{doc['content']}"
+                    for doc in all_docs
+                ])
+                context = full_context
+            else:
+                context = "\n\n".join([
+                    f"Page document {doc['document_name']}:\n{doc['content']}"
+                    for doc in relevant_docs
+                ])
+
             webhook_data = {
                 "question": request.question,
                 "context": context,
@@ -336,6 +355,11 @@ async def ask_question(request: QuestionRequest):
                     "message": "Format de réponse n8n invalide"
                 }
         else:
+            context = "\n\n".join([
+                f"Page document {doc['document_name']}:\n{doc['content']}"
+                for doc in relevant_docs
+            ])
+
             messages = [
                 {"role": "system", "content": "Vous êtes un assistant qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
                 {"role": "user", "content": f"Contexte : {context}\n\nQuestion : {request.question}"}
