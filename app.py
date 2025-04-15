@@ -18,7 +18,7 @@ import re
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-cred = credentials.Certificate("./medisense-8ca26-firebase-adminsdk-fbsvc-edee655a7c.json")  # Vous devrez remplacer ce chemin
+cred = credentials.Certificate("./medisense-8ca26-firebase-adminsdk-fbsvc-edee655a7c.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -266,29 +266,80 @@ async def ask_question(request: QuestionRequest):
             for doc in relevant_docs
         ])
 
-        messages = [
-            {"role": "system", "content": "Vous êtes un assistant qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
-            {"role": "user", "content": f"Contexte : {context}\n\nQuestion : {request.question}"}
-        ]
-        
-        response = openai_client.chat.completions.create(
-            model=gpt_deployment,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
-        )
+        # Mots-clés pour détecter une demande de rendez-vous
+        rdv_keywords = ["rdv", "rendez-vous", "prendre rendez-vous", "souhaite prendre un rdv", 
+                       "souhaite prendre rendez-vous", "voulez prendre un rdv", "voulez prendre rendez-vous"]
 
-        return {
-            "status": "success",
-            "answer": response.choices[0].message.content,
-            "sources": [
-                {
-                    "document_name": doc["document_name"],
-                    "content": doc["content"]
+        if any(keyword in request.question.lower() for keyword in rdv_keywords):
+            webhook_data = {
+                "question": request.question,
+                "context": context,
+                "user_id": request.user_id,
+                "pdf_id": pdf_id,
+                "relevant_docs": [
+                    {
+                        "document_name": doc["document_name"],
+                        "content": doc["content"]
+                    }
+                    for doc in relevant_docs
+                ]
+            }
+
+            response = requests.post(
+                "https://n8n-prod.makeitpost.com/webhook-test/866df774-73fb-4176-b0ec-a4a8c499aaaf",
+                json=webhook_data
+            )
+
+            print(response.json())
+
+            if response.status_code != 200:
+                return {
+                    "status": "error",
+                    "message": f"Erreur lors de l'appel au webhook: {response.status_code}"
                 }
-                for doc in relevant_docs
+
+            n8n_response = response.json()
+            if isinstance(n8n_response, list) and len(n8n_response) > 0 and "output" in n8n_response[0]:
+                return {
+                    "status": "success",
+                    "answer": n8n_response[0]["output"],
+                    "sources": [
+                        {
+                            "document_name": doc["document_name"],
+                            "content": doc["content"]
+                        }
+                        for doc in relevant_docs
+                    ]
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "Format de réponse n8n invalide"
+                }
+        else:
+            messages = [
+                {"role": "system", "content": "Vous êtes un assistant qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
+                {"role": "user", "content": f"Contexte : {context}\n\nQuestion : {request.question}"}
             ]
-        }
+            
+            response = openai_client.chat.completions.create(
+                model=gpt_deployment,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+
+            return {
+                "status": "success",
+                "answer": response.choices[0].message.content,
+                "sources": [
+                    {
+                        "document_name": doc["document_name"],
+                        "content": doc["content"]
+                    }
+                    for doc in relevant_docs
+                ]
+            }
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
