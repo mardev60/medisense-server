@@ -15,6 +15,12 @@ import requests
 import json
 import base64
 import re
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+cred = credentials.Certificate("./medisense-8ca26-firebase-adminsdk-fbsvc-edee655a7c.json")  # Vous devrez remplacer ce chemin
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 load_dotenv()
 
@@ -91,6 +97,16 @@ class SearchRequest(BaseModel):
     user_id: str
     top_k: Optional[int] = 3
 
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    upload_date: datetime
+    size: int
+    status: str
+    chunks_count: Optional[int] = None
+    pdf_id: Optional[str] = None
+    error_message: Optional[str] = None
+
 def get_embedding(text: str) -> List[float]:
     try:
         response = openai_client.embeddings.create(
@@ -164,11 +180,19 @@ def split_text(text, max_tokens=30):
 @app.post("/analyze")
 async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...)):
     try:
-        
         file_content = await file.read()
         
         if len(file_content) == 0:
             return {"status": "error", "message": "Le fichier est vide"}
+            
+        doc_ref = db.collection('documents').document()
+        doc_ref.set({
+            'filename': file.filename,
+            'upload_date': datetime.utcnow(),
+            'size': len(file_content)/1024,
+            'user_id': user_id,
+            'status': 'processing'
+        })
             
         poller = document_analysis_client.begin_analyze_document(
             "prebuilt-read", file_content
@@ -201,9 +225,16 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             documents.append(document)
 
         if not documents:
+            doc_ref.update({'status': 'error', 'error_message': 'Aucun contenu n\'a pu être extrait'})
             return {"status": "error", "message": "Aucun contenu n'a pu être extrait du document"}
 
         search_client.upload_documents(documents)
+        
+        doc_ref.update({
+            'status': 'completed',
+            'chunks_count': len(documents),
+            'pdf_id': pdf_id
+        })
 
         return {
             "status": "success",
@@ -216,7 +247,8 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
         }
     
     except Exception as e:
-        print(f"Erreur lors de l'analyse du document: {str(e)}")
+        if 'doc_ref' in locals():
+            doc_ref.update({'status': 'error', 'error_message': str(e)})
         return {"status": "error", "message": str(e)}
 
 @app.post("/ask")
@@ -260,6 +292,36 @@ async def ask_question(request: QuestionRequest):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.get("/documents/{user_id}")
+async def get_user_documents(user_id: str):
+    try:
+        docs = db.collection('documents').where('user_id', '==', user_id).stream()
+        
+        documents = []
+        for doc in docs:
+            doc_data = doc.to_dict()
+            documents.append(DocumentResponse(
+                id=doc.id,
+                filename=doc_data.get('filename'),
+                upload_date=doc_data.get('upload_date'),
+                size=doc_data.get('size'),
+                status=doc_data.get('status'),
+                chunks_count=doc_data.get('chunks_count'),
+                pdf_id=doc_data.get('pdf_id'),
+                error_message=doc_data.get('error_message')
+            ))
+        
+        return {
+            "status": "success",
+            "documents": documents
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
