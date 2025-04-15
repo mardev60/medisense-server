@@ -84,6 +84,7 @@ app.add_middleware(
 class QuestionRequest(BaseModel):
     question: str
     user_id: str
+    pdf_id: str
 
 class SearchRequest(BaseModel):
     query: str
@@ -101,11 +102,11 @@ def get_embedding(text: str) -> List[float]:
         print(f"Erreur lors de la génération de l'embedding: {str(e)}")
         raise
 
-def vector_search(vector, user_id, top_k=3):
+def vector_search(vector, user_id, pdf_id, top_k=3):
     try:
         results = search_client.search(
             search_text="*",
-            filter=f"user_id eq '{user_id}'",
+            filter=f"user_id eq '{user_id}' and pdf_id eq '{pdf_id}'",
             vector_queries=[{
                 "vector": vector,
                 "fields": "embedding",
@@ -174,6 +175,8 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
         )
         result = poller.result()
 
+        pdf_id = f"{file.filename}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')}"
+
         chunks = split_text(result.content)
 
         documents = []
@@ -192,6 +195,7 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
                 "content": str(chunk),
                 "embedding": embedding,
                 "document_name": str(file.filename),
+                "pdf_id": pdf_id,
                 "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             }
             documents.append(document)
@@ -206,7 +210,8 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
             "message": "Document analysé et indexé avec succès",
             "data": {
                 "chunks_processed": len(documents),
-                "document_name": file.filename
+                "document_name": file.filename,
+                "pdf_id": pdf_id
             }
         }
     
@@ -217,9 +222,10 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
+        pdf_id = request.pdf_id
         question_embedding = get_embedding(request.question)
         
-        results = vector_search(question_embedding, request.user_id)
+        results = vector_search(question_embedding, request.user_id, pdf_id)
         relevant_docs = results.get("value", [])
         print(relevant_docs)
 
