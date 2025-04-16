@@ -345,13 +345,7 @@ async def ask_question(request: QuestionRequest):
                 response_data = {
                     "status": "success",
                     "answer": answer,
-                    "sources": [
-                        {
-                            "document_name": doc["document_name"],
-                            "content": doc["content"]
-                        }
-                        for doc in relevant_docs
-                    ]
+                    "sources": []
                 }
 
                 if request.vocalMode:
@@ -381,7 +375,7 @@ async def ask_question(request: QuestionRequest):
             ])
 
             messages = [
-                {"role": "system", "content": "Vous êtes un assistant qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
+                {"role": "system", "content": "Vous êtes un assistant médical qui répond aux questions en se basant sur le contexte fourni. Si la réponse n'est pas dans le contexte, dites-le clairement."},
                 {"role": "user", "content": f"Contexte : {context}\n\nQuestion : {request.question}"}
             ]
             
