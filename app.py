@@ -17,6 +17,7 @@ import base64
 import re
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
+from elevenlabs import ElevenLabs
 
 cred = credentials.Certificate("./medisense-8ca26-firebase-adminsdk-fbsvc-edee655a7c.json")
 firebase_admin.initialize_app(cred, {
@@ -94,6 +95,7 @@ class QuestionRequest(BaseModel):
     question: str
     user_id: str
     pdf_id: str
+    vocalMode: Optional[bool] = False
 
 class SearchRequest(BaseModel):
     query: str
@@ -274,6 +276,7 @@ async def analyze_document(file: UploadFile = File(...), user_id: str = Body(...
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
+        print(request)
         pdf_id = request.pdf_id
         question_embedding = get_embedding(request.question)
         
@@ -338,9 +341,10 @@ async def ask_question(request: QuestionRequest):
 
             n8n_response = response.json()
             if isinstance(n8n_response, list) and len(n8n_response) > 0 and "output" in n8n_response[0]:
-                return {
+                answer = n8n_response[0]["output"]
+                response_data = {
                     "status": "success",
-                    "answer": n8n_response[0]["output"],
+                    "answer": answer,
                     "sources": [
                         {
                             "document_name": doc["document_name"],
@@ -349,6 +353,22 @@ async def ask_question(request: QuestionRequest):
                         for doc in relevant_docs
                     ]
                 }
+
+                if request.vocalMode:
+                    elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+                    if elevenlabs_api_key:
+                        client = ElevenLabs(api_key=elevenlabs_api_key)
+                        audio_generator = client.text_to_speech.convert(
+                            voice_id="TGAegA0zNRi8I6nUdq3i",
+                            output_format="mp3_44100_128",
+                            text=answer,
+                            model_id="eleven_multilingual_v2"
+                        )
+                        audio_bytes = b''.join(audio_generator)
+                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        response_data["audio"] = audio_base64
+
+                return response_data
             else:
                 return {
                     "status": "error",
@@ -372,9 +392,10 @@ async def ask_question(request: QuestionRequest):
                 max_tokens=500
             )
 
-            return {
+            answer = response.choices[0].message.content
+            response_data = {
                 "status": "success",
-                "answer": response.choices[0].message.content,
+                "answer": answer,
                 "sources": [
                     {
                         "document_name": doc["document_name"],
@@ -383,6 +404,22 @@ async def ask_question(request: QuestionRequest):
                     for doc in relevant_docs
                 ]
             }
+
+            if request.vocalMode:
+                elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+                if elevenlabs_api_key:
+                    client = ElevenLabs(api_key=elevenlabs_api_key)
+                    audio_generator = client.text_to_speech.convert(
+                        voice_id="TGAegA0zNRi8I6nUdq3i",
+                        output_format="mp3_44100_128",
+                        text=answer,
+                        model_id="eleven_multilingual_v2"
+                    )
+                    audio_bytes = b''.join(audio_generator)
+                    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                    response_data["audio"] = audio_base64
+
+            return response_data
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
